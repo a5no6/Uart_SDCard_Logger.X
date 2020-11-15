@@ -1,0 +1,469 @@
+Many of files are from microchip mla_v2017_03_06 library or mcc generated under Apatch-2.0 license or microchip license.
+For the parts I wrote on my own, I publish them under MIT license
+
+See license notice at the top of each file.
+
+For files with Apatch-2.0 license, below is modification.
+drv_spi_16bit is not Apatch-2.0 license and I do not have to clearify modification, but I showed it for record.
+
+--- microchip/mla/v2017_03_06/framework/driver/spi/drv_spi.h	2017-03-04 03:55:19.000000000 +0900
++++ drv_spi.h	2019-09-15 09:26:21.000000000 +0900
+@@ -81,7 +81,8 @@
+ {
+     /*Channel for the SPI communication */
+     uint16_t            channel;
+-#if defined (__PIC32MX)
++//#if defined (__PIC32MX)
++#if defined (__XC32__)
+     /*Baud rate for the SPI communication */
+     uint16_t            baudRate;
+     uint16_t            dummy;
+
+--- microchip/mla/v2017_03_06/framework/fileio/drivers/sd_spi/sd_spi.c	2017-03-04 03:55:25.000000000 +0900
++++ sd_spi.c	2020-11-15 09:30:30.737111838 +0900
+@@ -26,11 +26,22 @@
+ #include "system.h"
+ #include "sd_spi.h"
+ #include "sd_spi_private.h"
++#include "drv_spi.h"
+ 
+ #include <string.h>
+ #include <stdint.h>
+ #include <stdbool.h>
+ 
++#define __DEBUG_UART
++#define PrintROMASCIIStringUART UART_puts
++#define PrintRAMuint8_tsUART    UART_put_uint8
++void UARTSendLineFeedCarriageReturn(){UART_puts("\n");UART_flush();};
++
++#define PRINT_WRITE_ADDRESS
++//#define _PL()	{UART_puts(__FILE__);UART_puts(":");UART_put_uint16(__LINE__);UART_puts("\n");UART_flush();}
++#define _PL() 
++#define UART_flush()
++
+ /******************************************************************************
+  * Global Variables
+  *****************************************************************************/
+@@ -42,7 +53,8 @@
+ uint32_t finalLBA;
+ uint16_t gMediaSectorSize;
+ uint8_t gSDMode;
+-static FILEIO_MEDIA_INFORMATION mediaInformation;
++//static FILEIO_MEDIA_INFORMATION mediaInformation;
++FILEIO_MEDIA_INFORMATION mediaInformation;
+ static FILEIO_SD_ASYNC_IO ioInfo; //Declared global context, for fast/code efficient access
+ static uint8_t gSDMediaState = FILEIO_SD_STATE_NOT_INITIALIZED;
+ 
+@@ -325,6 +337,7 @@
+     uint16_t timeout;
+     uint32_t longTimeout;
+     
++    IEC0CLR = _IEC0_T1IE_MASK;            
+     (*config->csFunc)(0);       // Select card
+     
+     // Copy over data
+@@ -333,7 +346,6 @@
+     CmdPacket.crc        = sdmmc_cmdtable[cmd].CRC;       // Calc CRC here
+     
+     CmdPacket.TRANSMIT_BIT = 1;             //Set Transmission bit
+-    
+     DRV_SPI_Put(config->index, CmdPacket.cmd);                //Send Command
+     DRV_SPI_Put(config->index, CmdPacket.addr3);              //Most Significant uint8_t
+     DRV_SPI_Put(config->index, CmdPacket.addr2);
+@@ -374,12 +386,14 @@
+         //command, where the media card may be busy writing its internal buffer
+         //to the flash memory.  This can typically take a few milliseconds, 
+         //with a recommended maximum timeout of 250ms or longer for SD cards.
++        IEC0SET = _IEC0_T1IE_MASK;            
+         longTimeout = FILEIO_SD_WRITE_TIMEOUT;
+         do
+         {
+             response.r1._byte = DRV_SPI_Get (config->index);
+             longTimeout--;
+         }while((response.r1._byte == 0x00) && (longTimeout != 0));
++        IEC0CLR = _IEC0_T1IE_MASK;            
+ 
+         response.r1._byte = 0x00;
+     }
+@@ -405,7 +419,7 @@
+     {
+         (*config->csFunc)(1);
+     }
+-
++    IEC0SET = _IEC0_T1IE_MASK;            
+     return(response);
+ }
+ 
+@@ -534,6 +548,7 @@
+ }
+ #endif
+ 
++//#define PRINT_SECTOR_READ_INFO
+ 
+ bool FILEIO_SD_SectorRead(FILEIO_SD_DRIVE_CONFIG * config, uint32_t sectorAddress, uint8_t* buffer)
+ {
+@@ -557,6 +572,25 @@
+         status = FILEIO_SD_AsyncReadTasks(config, &info);
+         if(status == FILEIO_SD_ASYNC_READ_COMPLETE)
+         {
++#ifdef PRINT_SECTOR_READ_INFO
++int i,j;
++//if(sectorAddress==0){
++if(0){
++    UART_puts("MBR\n");
++    for(j=0;j<(info.wNumBytes/16);j++){
++        for(i=0;i<16;i++){
++            UART_put_HEX8(buffer[i+16*j]);
++            UART_puts(" ");
++        }
++        UART_puts("\n");
++    }
++}else{
++    UART_puts("read ");
++    UART_put_HEX32(sectorAddress);
++    UART_puts("\n");
++    UART_flush();
++}
++#endif
+             return true;
+         }
+         else if(status == FILEIO_SD_ASYNC_READ_ERROR)
+@@ -1003,7 +1037,6 @@
+             //Initiate the write sequence.
+             gSDMediaState = FILEIO_SD_STATE_BUSY;         //Let other code in the app know that the media is busy (so it doesn't also try to send the SD card commands of it's own)
+             blockCounter = FILEIO_SD_MEDIA_BLOCK_SIZE;    //Initialize counter.  Will be used later for block boundary tracking.
+-
+             //Copy input structure into a statically allocated global instance 
+             //of the structure, for faster local access of the parameters with 
+             //smaller code size.
+@@ -1033,8 +1066,13 @@
+                 response = FILEIO_SD_SendCmd(config, FILEIO_SD_APP_CMD, 0x00000000);    //Send CMD55
+                 if(response.r1._byte == 0x00)   //Check if successful.
+                 {
++                    UART_puts("Send CMD55 done.\n");
+                     FILEIO_SD_SendCmd(config, FILEIO_SD_SET_WRITE_BLOCK_ERASE_COUNT , preEraseBlockCount);    //Send ACMD23
++                    UART_puts("Send ACMD23 done.\n");
++                }else{
++                    UART_puts("Send CMD55 failed.\n");
+                 }
++  //              UART_flush();
+             }    
+ 
+             //The info->dwAddress parameter is the block address.
+@@ -1056,6 +1094,9 @@
+             {
+                 //Perhaps the card isn't initialized or present.
+                 info->bStateVariable = FILEIO_SD_ASYNC_WRITE_ERROR;
++                UART_puts("FILEIO_SD_ASYNC_WRITE_ERROR.\n");
++//                UART_flush();
++
+                 return FILEIO_SD_ASYNC_WRITE_ERROR; 
+             }    
+             else
+@@ -1245,6 +1286,12 @@
+     static FILEIO_SD_ASYNC_IO info;
+     uint8_t status;
+ 
++#ifdef PRINT_WRITE_ADDRESS
++    UART_puts("write ");
++    UART_put_HEX32(sectorAddress);
++    UART_puts("\n");
++//    UART_flush();
++#endif
+     if(allowWriteToZero == false)
+     {
+         if(sectorAddress == 0x00000000)
+@@ -1355,7 +1402,8 @@
+             spiInitData.cke = 0;
+     	    spiInitData.baudRate = SPICalculateBRG(SYS_CLK_FrequencyPeripheralGet(), 400000);
+             spiInitData.channel = config->index;
+-            DRV_SPI_Initialize(config->index, &spiInitData);
++            DRV_SPI_Initialize(&spiInitData);
++//            DRV_SPI_Initialize(config->index, &spiInitData);
+ //    		OpenSPI(SPI_START_CFG_1, SPI_START_CFG_2);
+     	#else //else C30 = PIC24/dsPIC devices
+             #if defined(DRV_SPI_CONFIG_V2_ENABLED)
+@@ -1448,7 +1496,7 @@
+     DRV_SPI_INIT_DATA spiInitData;
+ 
+ 	#ifdef __DEBUG_UART
+-	InitUART();
++//	InitUART();
+ 	#endif
+  
+     //Initialize global variables.  Will get updated later with valid data once
+@@ -1514,6 +1562,7 @@
+         PrintRAMuint8_tsUART(((unsigned char*)&response + 1), 1);
+         UARTSendLineFeedCarriageReturn();
+         PrintROMASCIIStringUART("Trying CMD12 to recover.\r\n");
++        UARTSendLineFeedCarriageReturn();
+         #endif
+ 
+         (*config->csFunc)(1);
+@@ -1644,6 +1693,7 @@
+             PrintROMASCIIStringUART("Media successfully processed CMD58: SD card is standard capacity v2.0 (or later) spec.\r\n");
+             #endif
+         } 
++       
+         //SD Card should now be finished with initialization sequence.  Device should be ready
+         //for read/write commands.
+ 
+@@ -1719,6 +1769,7 @@
+             {
+                 spiInitData.baudRate = SPICalculateBRG(SYS_CLK_FrequencyPeripheralGet(), SPI_FREQUENCY);
+             }
++            spiInitData.baudRate = 1;  // 1/2 PBCLOCK
+ //    		OpenSPI(SPI_START_CFG_1, SPI_START_CFG_2);
+     	#else //else C30 = PIC24/dsPIC devices
+             #if defined(DRV_SPI_CONFIG_V2_ENABLED)
+@@ -1762,6 +1813,7 @@
+         //Media failed to respond to the read CSD register operation.
+         #ifdef __DEBUG_UART  
+         PrintROMASCIIStringUART("Timeout occurred while processing CMD9 to read CSD register.\r\n");
++        UARTSendLineFeedCarriageReturn();
+         #endif
+         
+         mediaInformation.errorCode = MEDIA_CANNOT_INITIALIZE;
+@@ -1788,7 +1840,8 @@
+ 
+     #ifdef __DEBUG_UART  
+     PrintROMASCIIStringUART("CSD data structure contains: ");
+-    PrintRAMuint8_tsUART((unsigned char*)&CSDResponse, 20); 
++//    PrintRAMuint8_tsUART((unsigned char*)&CSDResponse, 20); 
++    PrintRAMuint8_tsUART((unsigned char*)&CSDResponse); 
+     UARTSendLineFeedCarriageReturn();
+     #endif
+     
+@@ -1856,6 +1909,10 @@
+ 		//correctly respond to SCSI get capacity requests (which will cause FILEIO_SD_CapacityRead() to get called).
+ 		finalLBA = ((uint32_t)(c_size + 1) * (uint16_t)((uint16_t)1 << (c_size_mult + 2)) * block_len) - 1;	//-1 on end is correction factor, since LBA = 0 is valid.		
+ 	}	
++UART_puts("finalLBA=");
++UART_put_HEX32(finalLBA);
++UART_puts("\n");
++//UART_flush();
+ 
+     //Turn off CRC7 if we can, might be an invalid cmd on some cards (CMD59)
+     //Note: POR default for the media is normally with CRC checking off in SPI 
+@@ -1870,6 +1927,7 @@
+ 
+     #ifdef __DEBUG_UART  
+     PrintROMASCIIStringUART("Returning from MediaInitialize() function.\r\n");
++    UARTSendLineFeedCarriageReturn();
+     #endif
+ 
+     //Finished with the SD card initialization sequence.
+
+
+--- microchip/mla/v2017_03_06/framework/driver/spi/src/drv_spi_16bit.c	2017-03-04 03:55:19.000000000 +0900
++++ drv_spi_32bit.c	2020-11-15 10:19:42.634370466 +0900
+@@ -1,3 +1,4 @@
++/* From microchip/mla/v2017_03_06/framework/driver/spi/src/drv_spi_16bit.c  */
+ /*******************************************************************************
+  Basic SPI Driver
+ 
+@@ -45,7 +46,7 @@
+ #include <xc.h>
+ #include "drv_spi.h"
+ #include "system_config.h"
+-#include "system.h"
++//#include "system.h"
+ #include <stdint.h>
+ 
+ // error checks
+@@ -88,8 +89,14 @@
+ */
+ #define DRV_SPI_STAT(i)      SPI##i##STAT
+ #define DRV_SPI_STATbits(i)  SPI##i##STATbits
++#if defined(__PIC32MX)|| defined(__PIC32MM) 
++#define DRV_SPI_CON(i)       SPI##i##CON
++#define DRV_SPI_CONbits(i)   SPI##i##CONbits
++#define DRV_SPI_BRG(i)       SPI##i##BRG
++#else
+ #define DRV_SPI_CON(i)       SPI##i##CON1
+ #define DRV_SPI_CONbits(i)   SPI##i##CON1bits
++#endif
+ #define DRV_SPI_CON2(i)      SPI##i##CON2
+ #define DRV_SPI_CON2bits(i)  SPI##i##CON2bits
+ #define DRV_SPI_BUF(i)       SPI##i##BUF
+@@ -170,7 +177,11 @@
+                 break;
+         }   
+ 
+-    #ifdef __PIC32MX
++//    #ifdef __PIC32MX
++    #if defined(__PIC32MX)|| defined(__PIC32MM) 
++#ifndef DRV_SPI_CONFIG_ENHANCED_BUFFER_DISABLE
++        DRV_SPI_CONbits(1).ENHBUF = 1;
++#endif
+         DRV_SPI_CONbits(1).MODE32 = ((pData->mode) >> 1)& 0x01;
+         DRV_SPI_BRG(1) = pData->baudRate;
+         DRV_SPI_CONbits(1).ON = SPI_MODULE_ENABLE;
+@@ -223,7 +234,11 @@
+                 break;
+         }           
+ 
+-    #ifdef __PIC32MX
++//    #ifdef __PIC32MX
++    #if defined(__PIC32MX)|| defined(__PIC32MM) 
++#ifndef DRV_SPI_CONFIG_ENHANCED_BUFFER_DISABLE
++        DRV_SPI_CONbits(2).ENHBUF = 1;
++#endif
+         DRV_SPI_CONbits(2).MODE32 = ((pData->mode) >> 1)& 0x01;
+         DRV_SPI_BRG(2) = pData->baudRate;
+         DRV_SPI_CONbits(2).ON = SPI_MODULE_ENABLE;
+@@ -276,7 +291,11 @@
+                 break;
+         }           
+         
+-    #ifdef __PIC32MX
++//    #ifdef __PIC32MX
++    #if defined(__PIC32MX)|| defined(__PIC32MM) 
++#ifndef DRV_SPI_CONFIG_ENHANCED_BUFFER_DISABLE
++        DRV_SPI_CONbits(3).ENHBUF = 1;
++#endif
+         DRV_SPI_CONbits(3).MODE32 = ((pData->mode) >> 1)& 0x01;
+         DRV_SPI_BRG(3) = pData->baudRate;
+         DRV_SPI_CONbits(3).ON = SPI_MODULE_ENABLE;
+@@ -329,7 +348,11 @@
+                 break;
+         }
+         
+-    #ifdef __PIC32MX
++//    #ifdef __PIC32MX
++    #if defined(__PIC32MX)|| defined(__PIC32MM) 
++#ifndef DRV_SPI_CONFIG_ENHANCED_BUFFER_DISABLE
++        DRV_SPI_CONbits(4).ENHBUF = 1;
++#endif
+         DRV_SPI_CONbits(4).MODE32 = ((pData->mode) >> 1)& 0x01;
+         DRV_SPI_BRG(4) = pData->baudRate;
+         DRV_SPI_CONbits(4).ON = SPI_MODULE_ENABLE;
+@@ -352,25 +375,41 @@
+ #ifdef DRV_SPI_CONFIG_CHANNEL_1_ENABLE
+     if (channel == 1)
+     {
++#if defined(__PIC32MX)|| defined(__PIC32MM)
++        DRV_SPI_CONbits(1).ON = 0;
++#else
+         DRV_SPI_STATbits(1).SPIEN = 0;
++#endif
+     }
+ #endif // #ifdef DRV_SPI_CONFIG_CHANNEL_1_ENABLE
+ #ifdef DRV_SPI_CONFIG_CHANNEL_2_ENABLE
+     if (channel == 2)
+     {
++#if defined(__PIC32MX)|| defined(__PIC32MM)
++        DRV_SPI_CONbits(2).ON = 0;
++#else
+         DRV_SPI_STATbits(2).SPIEN = 0;
++#endif
+     }
+ #endif // #ifdef DRV_SPI_CONFIG_CHANNEL_2_ENABLE
+ #ifdef DRV_SPI_CONFIG_CHANNEL_3_ENABLE
+     if (channel == 3)
+     {
++#if defined(__PIC32MX)|| defined(__PIC32MM)
++        DRV_SPI_CONbits(3).ON = 0;
++#else
+         DRV_SPI_STATbits(3).SPIEN = 0;
++#endif
+     }
+ #endif // #ifdef DRV_SPI_CONFIG_CHANNEL_3_ENABLE
+ #ifdef DRV_SPI_CONFIG_CHANNEL_4_ENABLE
+     if (channel == 4)
+     {
++#if defined(__PIC32MX)|| defined(__PIC32MM)
++        DRV_SPI_CONbits(4).ON = 0;
++#else
+         DRV_SPI_STATbits(4).SPIEN = 0;
++#endif
+     }
+ #endif // #ifdef DRV_SPI_CONFIG_CHANNEL_4_ENABLE
+ }
+@@ -408,28 +447,44 @@
+     #ifdef DRV_SPI_CONFIG_CHANNEL_1_ENABLE
+     static inline __attribute__((__always_inline__)) void DRV_SPI_WaitForDataByte1 (void)
+     {
++#if defined(__PIC32MX)|| defined(__PIC32MM)
++        while (DRV_SPI_STATbits(1).SPIRBE);
++#else
+         while (DRV_SPI_STATbits(1).SRXMPT);
++#endif
+     }
+     #endif
+ 
+     #ifdef DRV_SPI_CONFIG_CHANNEL_2_ENABLE
+     static inline __attribute__((__always_inline__)) void DRV_SPI_WaitForDataByte2 (void)
+     {
++#if defined(__PIC32MX)|| defined(__PIC32MM)
++        while (DRV_SPI_STATbits(2).SPIRBE);
++#else
+         while (DRV_SPI_STATbits(2).SRXMPT);
++#endif
+     }
+     #endif
+ 
+     #ifdef DRV_SPI_CONFIG_CHANNEL_3_ENABLE
+     static inline __attribute__((__always_inline__)) void DRV_SPI_WaitForDataByte3 (void)
+     {
++#if defined(__PIC32MX)|| defined(__PIC32MM)
++        while (DRV_SPI_STATbits(3).SPIRBE);
++#else
+         while (DRV_SPI_STATbits(3).SRXMPT);
++#endif
+     }
+     #endif
+ 
+     #ifdef DRV_SPI_CONFIG_CHANNEL_4_ENABLE
+     static inline __attribute__((__always_inline__)) void DRV_SPI_WaitForDataByte4 (void)
+     {
++#if defined(__PIC32MX)|| defined(__PIC32MM)
++        while (DRV_SPI_STATbits(4).SPIRBE);
++#else
+         while (DRV_SPI_STATbits(4).SRXMPT);
++#endif
+     }
+     #endif
+ #else
+@@ -471,7 +526,8 @@
+ #ifdef DRV_SPI_CONFIG_CHANNEL_1_ENABLE
+     if (channel == 1)
+     {
+-    #ifdef __PIC32MX
++//    #ifdef __PIC32MX
++    #if defined(__PIC32MX)|| defined(__PIC32MM)
+         // Wait for free buffer
+         while(!DRV_SPI_STATbits(1).SPITBE);
+     #else
+@@ -489,7 +545,8 @@
+ #ifdef DRV_SPI_CONFIG_CHANNEL_2_ENABLE
+     if (channel == 2)
+     {
+-    #ifdef __PIC32MX
++//    #ifdef __PIC32MX
++    #if defined(__PIC32MX)|| defined(__PIC32MM)
+         // Wait for free buffer
+         while(!DRV_SPI_STATbits(2).SPITBE);
+     #else
+@@ -506,7 +563,8 @@
+ #ifdef DRV_SPI_CONFIG_CHANNEL_3_ENABLE
+     if (channel == 3)
+     {
+-    #ifdef __PIC32MX
++//    #ifdef __PIC32MX
++    #if defined(__PIC32MX)|| defined(__PIC32MM)
+         // Wait for free buffer
+         while(!DRV_SPI_STATbits(3).SPITBE);
+     #else
+@@ -523,7 +581,8 @@
+ #ifdef DRV_SPI_CONFIG_CHANNEL_4_ENABLE
+     if (channel == 4)
+     {
+-    #ifdef __PIC32MX
++//    #ifdef __PIC32MX
++    #if defined(__PIC32MX)|| defined(__PIC32MM)
+         // Wait for free buffer
+         while(!DRV_SPI_STATbits(4).SPITBE);
+     #else
+
+
